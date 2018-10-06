@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <chrono>
 
 namespace
 {
@@ -34,11 +35,17 @@ namespace
         uint8_t status_;
         uint8_t data1_;
         uint8_t data2_;
+		uint64_t timestamp;
 
     public:
 
-        MidiMessage(DeviceID source, uint32_t rawData)
-            : source_(source), status_(rawData), data1_(rawData >> 8), data2_(rawData >> 16)
+		MidiMessage()
+		{
+			timestamp = 0;
+		}
+
+        MidiMessage(DeviceID source, uint32_t rawData, uint64_t timestamp)
+            : source_(source), status_(rawData), data1_(rawData >> 8), data2_(rawData >> 16), timestamp(timestamp)
         {
         }
 
@@ -50,6 +57,11 @@ namespace
             ul |= (uint64_t)data2_ << 48;
             return ul;
         }
+
+		uint64_t GetTimestamp()
+		{
+			return timestamp;
+		}
 
         std::string ToString()
         {
@@ -69,15 +81,23 @@ namespace
     // Mutex for resources
     std::recursive_mutex resource_lock;
 
+	MidiMessage recent_message{};
+
     // MIDI input callback
     static void CALLBACK MidiInProc(HMIDIIN hMidiIn, UINT wMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2)
     {
+		auto now = std::chrono::steady_clock::now();
+		auto nowMilliseconds = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
+		auto epoch = nowMilliseconds.time_since_epoch();
+		auto value = std::chrono::duration_cast<std::chrono::milliseconds>(epoch);
+		uint64_t duration = static_cast<uint64_t>(value.count());
+
         if (wMsg == MIM_DATA)
         {
             DeviceID id = DeviceHandleToID(hMidiIn);
             uint32_t raw = static_cast<uint32_t>(dwParam1);
             resource_lock.lock();
-            message_queue.push(MidiMessage(id, raw));
+            message_queue.push(MidiMessage(id, raw, duration));
             resource_lock.unlock();
         }
         else if (wMsg == MIM_CLOSE)
@@ -199,9 +219,15 @@ EXPORT_API uint64_t MidiJackDequeueIncomingData()
     if (message_queue.empty()) return 0;
 
     resource_lock.lock();
-    auto msg = message_queue.front();
+    auto msg = recent_message = message_queue.front();
     message_queue.pop();
     resource_lock.unlock();
 
     return msg.Encode64Bit();
+}
+
+// Retrieves the cached timestamp associated with the most recent midi message.
+EXPORT_API uint64_t MidiJackGetTimestamp()
+{
+	return recent_message.GetTimestamp();
 }
