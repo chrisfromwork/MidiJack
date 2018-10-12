@@ -54,6 +54,10 @@ namespace MidiJack
         // Channel state array
         ChannelState[] _channelArray;
 
+        // Clock information
+        public Queue<ulong> _clockEventTimestamps = new Queue<ulong>();
+        public int _clockEventCount = 0;
+
         // Last update frame number
         int _lastFrame;
 
@@ -106,10 +110,16 @@ namespace MidiJack
         public delegate void NoteOnDelegate(MidiChannel channel, int note, float velocity);
         public delegate void NoteOffDelegate(MidiChannel channel, int note);
         public delegate void KnobDelegate(MidiChannel channel, int knobNumber, float knobValue);
+        public delegate void ClockDelegate(float beatlLength);
 
         public NoteOnDelegate noteOnDelegate { get; set; }
         public NoteOffDelegate noteOffDelegate { get; set; }
         public KnobDelegate knobDelegate { get; set; }
+
+        public event NoteOnDelegate noteOnEvent;
+        public event NoteOffDelegate noteOffEvent;
+        public event KnobDelegate knobEvent;
+        public event ClockDelegate clockEvent;
 
         #endregion
 
@@ -224,6 +234,8 @@ namespace MidiJack
                     _channelArray[(int)MidiChannel.All]._noteArray[message.data1] = velocity;
                     if (noteOnDelegate != null)
                         noteOnDelegate((MidiChannel)channelNumber, message.data1, velocity - 1);
+                    if (noteOnEvent != null)
+                        noteOnEvent.Invoke((MidiChannel)channelNumber, message.data1, velocity - 1);
                 }
 
                 // Note off message?
@@ -233,6 +245,8 @@ namespace MidiJack
                     _channelArray[(int)MidiChannel.All]._noteArray[message.data1] = -1;
                     if (noteOffDelegate != null)
                         noteOffDelegate((MidiChannel)channelNumber, message.data1);
+                    if (noteOffEvent != null)
+                        noteOffEvent((MidiChannel)channelNumber, message.data1);
                 }
 
                 // CC message?
@@ -246,6 +260,48 @@ namespace MidiJack
                     _channelArray[(int)MidiChannel.All]._knobMap[message.data1] = level;
                     if (knobDelegate != null)
                         knobDelegate((MidiChannel)channelNumber, message.data1, level);
+                    if (knobEvent != null)
+                        knobEvent((MidiChannel)channelNumber, message.data1, level);
+                }
+
+                // Clock message ?
+                if (message.status == 0xF8)
+                {
+                    var timestamp = GetTimestamp();
+                    if (timestamp > 0)
+                    {
+                        _clockEventTimestamps.Enqueue(timestamp);
+                    }
+                    _clockEventCount++;
+
+                    if (_clockEventCount >= 24)
+                    {
+                        if (_clockEventTimestamps.Count > 1)
+                        {
+                            float mean = 0;
+                            int count = _clockEventTimestamps.Count - 1;
+                            ulong time = _clockEventTimestamps.Dequeue();
+
+                            while (_clockEventTimestamps.Count > 0)
+                            {
+                                ulong temp = _clockEventTimestamps.Dequeue();
+                                ulong diff = temp - time;
+                                mean += ((diff) / (float) count);
+                                time = temp;
+                            }
+
+                            if (clockEvent != null)
+                            {
+                                clockEvent(24.0f * mean);
+                            }
+                        }
+                        else
+                        {
+                            _clockEventTimestamps.Clear();
+                        }
+
+                        _clockEventCount = 0;
+                    }
                 }
 
                 #if UNITY_EDITOR
@@ -268,6 +324,9 @@ namespace MidiJack
 
         [DllImport("MidiJackPlugin", EntryPoint="MidiJackDequeueIncomingData")]
         public static extern ulong DequeueIncomingData();
+
+        [DllImport("MidiJackPlugin", EntryPoint = "MidiJackGetTimestamp")]
+        public static extern ulong GetTimestamp();
 
         #endregion
 
